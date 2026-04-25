@@ -1,0 +1,22 @@
+Python version 3.10.2 was used in the present analysis pipeline.
+
+Structure:
+    >data : 
+        -Background_Images/ : The selected images (after color deconvolution, only DAB channel) for the calculation of the DAB signal background.
+        -Background_Images_before_color_deconvolution/ : Images for background calculation before color deconvolution.
+        -Color_Vectors_Images_Used/ : Images used to generate the custom color vectors using QuPath.
+        -Selected_Images/ : Initial group of selected images for color vectors calculation and testing.
+        -background_calibration.npz : file containing the backgrounf information saved.
+        -qupath_averaged_vectors.txt : a .txt file where the final custom color vectors are saved.
+    >figures : Figures produced for different tests during the analysis pipeline.
+    >python_notebooks_final/ : Contains the main python notebooks. 
+        -Background_Calculation.ipynb : Uses the selected background images (from data/Background_Images) to calculate the DAB background.
+        -DAB_Quantification.ipynb : Main batch execution for DAB quantification.
+        -Image_Color_Deconvolution.ipynb : Script using the generated custom stain vectors to run a batch pipeline for image color deconvolution.
+        -Region_Seperation.ipynb : A script used to seperate the generated 20x images from each subject regarding the different tissue region (grey vs white matter) they belong. It is developed based on the way the individual 20x images are generated and saved from the microscope.
+    >python_notebooks_test/ : Contains the test python notebooks.
+        -Color_Deconvolution_Tests.ipynb : A script used to develope the final custom color vectors from the manually produced color vectors from 10 selected images using QuPath.
+        -DAB_Quantification_Tests.ipynb : A script used to test different thresholds methods for DAB quantification on selected images.
+    >src/ : include the functions.py file with all the functions developed in the present pipeline.
+    requirements.txt : include the libraries used in the present analysis (intall in every python notebook)
+*data folder not commited to GitHub (.gitignore)

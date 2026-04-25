@@ -139,7 +139,6 @@ class QuPathStainVectors:
     
     def deconvolve_image(self, image):
         # 1. Convert to Optical Density (OD)
-        # This is non-negotiable for separation; RGB space cannot separate stains.
         img_float = image.astype(np.float64) / 255.0
         img_od = -np.log(img_float + 1e-6)
     
@@ -152,7 +151,7 @@ class QuPathStainVectors:
     
         stain_matrix = np.array([h_v, d_v, res_v]) 
     
-        # 3. The "Magic" Step: Matrix Inversion
+        # 3. Matrix Inversion
         # This is what creates the separation instead of just a color swap.
         inverse_matrix = np.linalg.inv(stain_matrix)
     
@@ -168,18 +167,16 @@ class QuPathStainVectors:
     
 
     def test_deconvolution(self, image_path):
-        """
-        Test the deconvolution on an image with RGB reconstruction
-        """
+
         img = cv2.imread(image_path)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 1. Perform deconvolution (using your existing robust method)
+        # 1. Perform deconvolution
         h, dab = self.deconvolve_image(img_rgb)
         
-        # 2. RECONSTRUCT RGB IMAGES (The change you requested)
-        # We use the Beer-Lambert law: Intensity = 255 * exp(-OD * Vector)
-        # We add a newaxis so the 2D channel can be multiplied by the 1D [R, G, B] vector
+        # 2. RECONSTRUCT RGB IMAGES
+        # Use the Beer-Lambert law: Intensity = 255 * exp(-OD * Vector)
+        # Add a newaxis so the 2D channel can be multiplied by the 1D [R, G, B] vector
         h_rgb_vis = 255 * np.exp(-h[:, :, np.newaxis] * self.hematoxylin_vector)
         dab_rgb_vis = 255 * np.exp(-dab[:, :, np.newaxis] * self.dab_vector)
         
@@ -200,16 +197,16 @@ class QuPathStainVectors:
         ax1.axis('off')
         
         ax2 = plt.subplot(2, 3, 2)
-        ax2.imshow(h_rgb_vis) # UPDATED: No longer uses cmap='Blues'
+        ax2.imshow(h_rgb_vis) 
         ax2.set_title('Hematoxylin Only\n(Nuclei Reconstructed)', fontsize=12, fontweight='bold')
         ax2.axis('off')
         
         ax3 = plt.subplot(2, 3, 3)
-        ax3.imshow(dab_rgb_vis) # UPDATED: No longer uses cmap='Oranges'
+        ax3.imshow(dab_rgb_vis) 
         ax3.set_title('DAB Only\n(Protein Reconstructed)', fontsize=12, fontweight='bold')
         ax3.axis('off')
         
-        # --- (Row 2 remains the same to track your data distributions) ---
+        # Row 2 
         ax4 = plt.subplot(2, 3, 4)
         ax4.hist(h.flatten(), bins=50, color='blue', alpha=0.7, edgecolor='black')
         ax4.set_xlabel('Hematoxylin Intensity (OD)')
@@ -330,7 +327,7 @@ class QuPathStainVectors:
         self.dab_vector = vectors['dab']
         self.stain_matrix = np.array([vectors['h'], vectors['dab']])
         
-        print("✓ Stain vectors loaded successfully!")
+        print("Stain vectors loaded successfully!")
         print(f"  H:   [{self.hematoxylin_vector[0]:.5f}, {self.hematoxylin_vector[1]:.5f}, {self.hematoxylin_vector[2]:.5f}]")
         print(f"  DAB: [{self.dab_vector[0]:.5f}, {self.dab_vector[1]:.5f}, {self.dab_vector[2]:.5f}]")
         
@@ -347,8 +344,8 @@ class DABQuantifier:
         self.reference_std = reference_std
         self.dab_vector = np.array([0.368, 0.597, 0.706])
     
-    def calibrate_from_background(self, white_matter_images, visualize=True):
-        """Calibrate background from white matter images."""
+    def calibrate_from_background(self, background_images, visualize=True):
+        """Calibrate background"""
         all_od_values = []
         image_stats = []
         
@@ -356,7 +353,7 @@ class DABQuantifier:
         print("CALIBRATING BACKGROUND FROM WHITE MATTER")
         print("="*60)
         
-        for img_path in white_matter_images:
+        for img_path in background_images:
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
@@ -373,7 +370,7 @@ class DABQuantifier:
                 'mean': np.mean(dab_od)
             })
             
-            print(f"✓ {Path(img_path).name}: Median={np.median(dab_od):.4f}")
+            print(f"{Path(img_path).name}: Median={np.median(dab_od):.4f}")
         
         if len(all_od_values) == 0:
             print("ERROR: No calibration images found.")
