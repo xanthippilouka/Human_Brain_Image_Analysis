@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from skimage import filters, morphology, measure, color
 from skimage.color import separate_stains
 import seaborn as sns
+import gc
+from pathlib import Path
 
 
 class QuPathStainVectors:
@@ -79,11 +81,11 @@ class QuPathStainVectors:
         # Check if variability is acceptable
         max_std = max(std_h.max(), std_dab.max())
         if max_std < 0.05:
-            print("✓ Low variability - excellent consistency across images")
+            print("Low variability - excellent consistency across images")
         elif max_std < 0.10:
-            print("✓ Moderate variability - good consistency")
+            print("Moderate variability - good consistency")
         else:
-            print(" High variability")
+            print("High variability")
         
         return self.stain_matrix
     
@@ -138,11 +140,11 @@ class QuPathStainVectors:
         plt.show()
     
     def deconvolve_image(self, image):
-        # 1. Convert to Optical Density (OD)
+        # 1.Convert to Optical Density (OD)
         img_float = image.astype(np.float64) / 255.0
         img_od = -np.log(img_float + 1e-6)
     
-        # 2. Construct the 3x3 Matrix properly
+        # 2.Construct the 3x3 Matrix properly
         # We need a 3rd 'Residual' vector that is perpendicular to H and DAB
         h_v = self.hematoxylin_vector
         d_v = self.dab_vector
@@ -151,11 +153,11 @@ class QuPathStainVectors:
     
         stain_matrix = np.array([h_v, d_v, res_v]) 
     
-        # 3. Matrix Inversion
+        # 3.Matrix Inversion
         # This is what creates the separation instead of just a color swap.
         inverse_matrix = np.linalg.inv(stain_matrix)
     
-        # 4. Multiply OD by the INVERSE matrix
+        # 4.Multiply OD by the INVERSE matrix
         # This subtracts the 'contribution' of one stain from the other.
         deconvolved = img_od @ inverse_matrix
     
@@ -171,10 +173,10 @@ class QuPathStainVectors:
         img = cv2.imread(image_path)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 1. Perform deconvolution
+        # 1.Perform deconvolution
         h, dab = self.deconvolve_image(img_rgb)
         
-        # 2. RECONSTRUCT RGB IMAGES
+        # 2.RECONSTRUCT RGB IMAGES
         # Use the Beer-Lambert law: Intensity = 255 * exp(-OD * Vector)
         # Add a newaxis so the 2D channel can be multiplied by the 1D [R, G, B] vector
         h_rgb_vis = 255 * np.exp(-h[:, :, np.newaxis] * self.hematoxylin_vector)
@@ -343,7 +345,7 @@ class DABQuantifier:
         self.reference_background = reference_background
         self.reference_std = reference_std
         self.dab_vector = np.array([0.368, 0.597, 0.706])
-    
+
     def calibrate_from_background(self, background_images, visualize=True):
         """Calibrate background"""
         all_od_values = []
@@ -392,6 +394,22 @@ class DABQuantifier:
         
         return self.reference_background, self.reference_std
     
+    def save_calibration(self, filepath='background_calibration.npz'):
+        """Save calibration."""
+        np.savez(filepath, 
+                 reference_background=self.reference_background,
+                 reference_std=self.reference_std)
+        print(f"✓ Calibration saved: {filepath}")
+    
+    def load_calibration(self, filepath='background_calibration.npz'):
+        """Load calibration."""
+        data = np.load(filepath)
+        self.reference_background = float(data['reference_background'])
+        self.reference_std = float(data['reference_std'])
+        print(f"  Calibration loaded: {filepath}")
+        print(f"  Background: {self.reference_background:.4f}")
+        print(f"  SD: {self.reference_std:.4f}")
+    
     def _plot_calibration(self, all_od_values, image_stats):
         """Simplified calibration visualization."""
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
@@ -430,8 +448,8 @@ class DABQuantifier:
         plt.tight_layout()
         plt.show()
     
-    def quantify_image(self, image_path, threshold_method='fixed_adaptive', 
-                      threshold_param=1.5, tissue_mask_threshold=245):
+    def quantify_image(self, image_path, total_tissue_pixels, threshold_method='fixed_adaptive', 
+                      threshold_param=3.5):
         """
         Quantify DAB in a single image.
         
@@ -444,7 +462,6 @@ class DABQuantifier:
                 'percentile' - Based on percentile range (param = sensitivity, default 0.3)
                 'multiscale' - Multi-scale combination (param = conservativeness, default 1.5)
             threshold_param: Parameter for threshold method
-            tissue_mask_threshold: Tissue detection (default 245)
         
         Returns:
             Dictionary with essential metrics only
@@ -457,47 +474,25 @@ class DABQuantifier:
             if img is None:
                 return None
             
+            #OD Conversion and DAB extraction
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # Tissue mask
-            gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-            tissue_mask = gray < tissue_mask_threshold
-            
-            if not np.any(tissue_mask):
-                return None
-            
-            # DAB extraction
             img_od = -np.log((img_rgb.astype(np.float32) / 255.0) + 1e-6)
             dab_od = np.dot(img_od, self.dab_vector)
             
-            # Background subtraction
+            #Background subtraction
             dab_signal = dab_od - self.reference_background
             dab_signal = np.clip(dab_signal, 0, None)
             
-            # Get tissue pixels
-            dab_tissue = dab_signal[tissue_mask]
-            
-            if len(dab_tissue) == 0 or np.max(dab_tissue) == 0:
-                return None
-            
             # Calculate threshold
             threshold = self._calculate_threshold(
-                dab_tissue, threshold_method, threshold_param
+                dab_signal, threshold_method, threshold_param
             )
             
             # Binary mask
-            dab_positive = (dab_signal > threshold) & tissue_mask
+            dab_positive = (dab_signal > threshold)
             
             # Calculate metrics
-            tissue_pixels = np.sum(tissue_mask)
             positive_pixels = np.sum(dab_positive)
-            
-            if positive_pixels > 0:
-                positive_intensity_mean = np.mean(dab_signal[dab_positive])
-                positive_intensity_sum = np.sum(dab_signal[dab_positive])
-            else:
-                positive_intensity_mean = 0.0
-                positive_intensity_sum = 0.0
             
             # Essential metrics only
             results = {                
@@ -505,34 +500,35 @@ class DABQuantifier:
                 
                 # RAW COUNTS
                 'positive_pixels': int(positive_pixels),
-                'tissue_pixels': int(tissue_pixels),
+                'total_tissue_pixels': int(total_tissue_pixels),
                 
                 # AREA METRICS (normalized by tissue)
-                'area_percent': round((positive_pixels / tissue_pixels * 100), 3),
+                'area_percent': round((positive_pixels / total_tissue_pixels * 100), 3) if total_tissue_pixels > 0 else 0,
                 
                 # INTENSITY METRICS (positive regions only)
-                'mean_positive_intensity': round(positive_intensity_mean, 4),
-                'total_positive_dab': round(positive_intensity_sum, 2),
+                'mean_intensity': round(np.mean(dab_signal[dab_positive]), 4) if positive_pixels > 0 else 0,
                 
                 # NORMALIZED INTENSITY
-                'dab_density': round((positive_intensity_sum / tissue_pixels), 6),
+                'dab_density': round(np.sum(dab_signal[dab_positive])/ total_tissue_pixels, 6) if total_tissue_pixels > 0 else 0,
                 
                 # THRESHOLD INFO
                 'threshold_value': round(threshold, 4),
                 'threshold_method': threshold_method,
                 
                 # QC
-                'tissue_coverage_percent': round((tissue_pixels / dab_signal.size * 100), 2),
-                'max_dab_signal': round(np.max(dab_tissue), 4)
+                'tissue_coverage_percent': round((total_tissue_pixels / dab_signal.size * 100), 2),
+                'max_dab_signal': round(np.max(dab_signal), 4)
             }
             
+            # Memory cleanup for batch stability
+            del img, img_rgb, img_od, dab_od, dab_signal
             return results
             
         except Exception as e:
             print(f"Error processing {image_path}: {str(e)}")
             return None
     
-    def _calculate_threshold(self, dab_tissue, method, param):
+    def _calculate_threshold(self, dab_signal, method, param):
         """Calculate threshold using specified method."""
         
         if method == 'fixed':
@@ -542,8 +538,8 @@ class DABQuantifier:
         elif method == 'fixed_adaptive':
             # Combines global background stats with local tissue stats
             global_thresh = param * self.reference_std
-            local_mean = np.mean(dab_tissue)
-            local_std = np.std(dab_tissue)
+            local_mean = np.mean(dab_signal)
+            local_std = np.std(dab_signal)
             
             # Only use local if tissue has reasonable signal
             if local_mean > 2 * self.reference_std:
@@ -555,17 +551,17 @@ class DABQuantifier:
         
         elif method == 'triangle':
             # Triangle algorithm - good for skewed distributions
-            dab_norm = (dab_tissue / np.max(dab_tissue) * 255).astype(np.uint8)
+            dab_norm = (dab_signal / np.max(dab_signal) * 255).astype(np.uint8)
             try:
                 threshold = filters.threshold_triangle(dab_norm)
-                threshold = (threshold / 255.0) * np.max(dab_tissue)
+                threshold = (threshold / 255.0) * np.max(dab_signal)
             except:
                 threshold = param * self.reference_std
         
         elif method == 'percentile':
             # Percentile-based: find pixels in top percentage
-            p98 = np.percentile(dab_tissue, 98)
-            p75 = np.percentile(dab_tissue, 75)
+            p98 = np.percentile(dab_signal, 98)
+            p75 = np.percentile(dab_signal, 75)
             # param controls sensitivity: 0.3 = moderate, 0.5 = sensitive
             threshold = p75 + param * (p98 - p75)
         
@@ -577,11 +573,11 @@ class DABQuantifier:
             t1 = param * self.reference_std
             
             # Method 2: Mean + SD
-            t2 = np.mean(dab_tissue) + np.std(dab_tissue)
+            t2 = np.mean(dab_signal) + np.std(dab_signal)
             
             # Method 3: Percentile
-            t3 = np.percentile(dab_tissue, 75) + 0.3 * (
-                np.percentile(dab_tissue, 98) - np.percentile(dab_tissue, 75)
+            t3 = np.percentile(dab_signal, 75) + 0.3 * (
+                np.percentile(dab_signal, 98) - np.percentile(dab_signal, 75)
             )
             
             # Weight toward more conservative (higher) threshold
@@ -593,7 +589,7 @@ class DABQuantifier:
         
         return threshold
     
-    def test_thresholds(self, test_images, tissue_mask_threshold=245, save_fig=True):
+    def test_thresholds(self, test_images, save_fig=True):
         """
         Test different threshold methods on representative images.
         
@@ -609,7 +605,7 @@ class DABQuantifier:
             ('fixed', 1.0, 'Fixed: 1.0σ'),
             ('fixed', 1.5, 'Fixed: 1.5σ'),
             ('fixed', 2.0, 'Fixed: 2.0σ'),
-            ('fixed_adaptive', 3.0, 'Adaptive Fixed'),
+            ('fixed_adaptive', 3.5, 'Adaptive Fixed'),
             ('triangle', None, 'Triangle'),
             ('percentile', 0.3, 'Percentile (0.3)'),
             ('multiscale', 1.5, 'Multi-scale')
@@ -632,7 +628,6 @@ class DABQuantifier:
                     img_path,
                     threshold_method=method,
                     threshold_param=param if param else 1.5,
-                    tissue_mask_threshold=tissue_mask_threshold
                 )
                 
                 if result:
@@ -677,7 +672,6 @@ class DABQuantifier:
                     img_path,
                     threshold_method=method,
                     threshold_param=param if param else 1.5,
-                    tissue_mask_threshold=tissue_threshold
                 )
                 
                 if result:
@@ -685,13 +679,12 @@ class DABQuantifier:
                     overlay = img_rgb.copy()
                     # Recreate mask for visualization
                     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-                    tissue_mask = gray < tissue_threshold
                     img_od = -np.log((img_rgb.astype(np.float32) / 255.0) + 1e-6)
                     dab_od = np.dot(img_od, self.dab_vector)
                     dab_signal = np.clip(dab_od - self.reference_background, 0, None)
                     
                     threshold = result['threshold_value']
-                    dab_positive = (dab_signal > threshold) & tissue_mask
+                    dab_positive = (dab_signal > threshold) 
                     
                     overlay[dab_positive] = [255, 0, 0]
                     
@@ -709,7 +702,7 @@ class DABQuantifier:
     
     def batch_process(self, image_folder, output_csv='results.csv',
                      output_masks_folder=None, threshold_method='fixed_adaptive',
-                     threshold_param=1.5, tissue_mask_threshold=245):
+                     threshold_param=1.5):
         """
         Optimized batch processing - saves only essential metrics.
         
@@ -719,7 +712,6 @@ class DABQuantifier:
             output_masks_folder: Optional folder to save masks
             threshold_method: Threshold algorithm
             threshold_param: Parameter for threshold
-            tissue_mask_threshold: Tissue detection threshold
         
         Returns:
             DataFrame with results
@@ -746,15 +738,14 @@ class DABQuantifier:
             result = self.quantify_image(
                 img_path,
                 threshold_method=threshold_method,
-                threshold_param=threshold_param,
-                tissue_mask_threshold=tissue_mask_threshold
+                threshold_param=threshold_param
             )
             
             if result:
                 # Save mask if requested
                 if output_masks_folder:
                     self._save_mask(img_path, result, output_masks_folder, 
-                                   threshold_param, tissue_mask_threshold)
+                                   threshold_param)
                 
                 results_list.append(result)
                 print(f"✓ (Area: {result['area_percent']:.2f}%, DAB: {result['mean_positive_intensity']:.4f})")
@@ -773,42 +764,22 @@ class DABQuantifier:
         
         return df
     
-    def _save_mask(self, img_path, result, output_folder, threshold_param, tissue_threshold):
+    def _save_mask(self, img_path, result, output_folder, dab_positive, tissue_mask):
         """Save visualization mask for QC."""
-        img = cv2.imread(str(img_path))
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Recreate mask
-        gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-        tissue_mask = gray < tissue_threshold
-        img_od = -np.log((img_rgb.astype(np.float32) / 255.0) + 1e-6)
-        dab_od = np.dot(img_od, self.dab_vector)
-        dab_signal = np.clip(dab_od - self.reference_background, 0, None)
-        
-        threshold = result['threshold_value']
-        dab_positive = (dab_signal > threshold) & tissue_mask
-        
-        # Create RGB mask: white=tissue, red=positive
+        # Create the high-contrast visualization: 
+        # White = Tissue Area, Red = DAB Positive pixels
         mask_vis = np.zeros((*dab_positive.shape, 3), dtype=np.uint8)
-        mask_vis[tissue_mask] = [255, 255, 255]
-        mask_vis[dab_positive] = [255, 0, 0]
-        
+    
+        # Fill tissue area with white
+        mask_vis[tissue_mask] = [255, 255, 255] 
+    
+        # Overlay positive DAB with Red
+        mask_vis[dab_positive] = [255, 0, 0] 
+    
         mask_filename = output_folder / f"{img_path.stem}_mask.png"
+        # Convert RGB to BGR for OpenCV saving
         cv2.imwrite(str(mask_filename), cv2.cvtColor(mask_vis, cv2.COLOR_RGB2BGR))
+        
     
-    def save_calibration(self, filepath='background_calibration.npz'):
-        """Save calibration."""
-        np.savez(filepath, 
-                 reference_background=self.reference_background,
-                 reference_std=self.reference_std)
-        print(f"✓ Calibration saved: {filepath}")
     
-    def load_calibration(self, filepath='background_calibration.npz'):
-        """Load calibration."""
-        data = np.load(filepath)
-        self.reference_background = float(data['reference_background'])
-        self.reference_std = float(data['reference_std'])
-        print(f"✓ Calibration loaded: {filepath}")
-        print(f"  Background: {self.reference_background:.4f}")
-        print(f"  SD: {self.reference_std:.4f}")
 
